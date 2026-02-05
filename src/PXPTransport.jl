@@ -41,6 +41,10 @@ export energy_density_original, projector_mpo_original
 export merge_mpo_pairs
 export energy_density_merged, center_energy_density_merged
 export projector_mpo_merged, identity_mpo_merged
+# PNP / PNPNP energy densities
+export energy_density_pnp_original, energy_density_pnpnp_original
+export energy_density_pnp_merged, energy_density_pnpnp_merged
+export center_energy_density_pnp_merged, center_energy_density_pnpnp_merged
 
 export TEBDParams, evolve_mpo, run_tebd_evolution
 export make_trotter_gates, make_trotter_gates_merged

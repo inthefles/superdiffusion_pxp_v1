@@ -293,6 +293,168 @@ function _identity_tensor()
     return W
 end
 
+#------------------------------------------------------------------------------
+# Number Operator 𝒩 = |↑⟩⟨↑| (χ=1 local operator)
+#------------------------------------------------------------------------------
+
+"""
+    _number_operator_tensor(δ::Float64) -> Array{ComplexF64, 4}
+
+Number operator 𝒩 = δ |↑⟩⟨↑|. Shape: W[s', s, α, β] with α,β ∈ {1}.
+This is a χ=1 local operator (trivial virtual bonds).
+Used as the local term in the PNP energy density: h_l^{PNP} includes δ n_l.
+"""
+function _number_operator_tensor(δ::Float64)
+    d = 2
+    W = zeros(ComplexF64, d, d, 1, 1)
+    W[SPIN_UP, SPIN_UP, 1, 1] = δ
+    return W
+end
+
+#==============================================================================#
+# Projector-Sandwich Helper
+#==============================================================================#
+
+"""
+    _projector_sandwich_mpo(N::Int, first_op::Int, last_op::Int,
+                            central_tensors::Vector{Array{ComplexF64,4}};
+                            sites=nothing) -> MPO
+
+Generic MPO builder for a single operator block sandwiched by constraint
+projectors:
+
+    h = 𝒫_{1..first_op-1} · [central_tensors] · 𝒫_{last_op+1..N}
+
+Each element of `central_tensors` is a (2,2,1,1) χ=1 local-operator tensor
+(e.g. `_down_projector_tensor()`, `_flip_operator_tensor(Ω)`,
+`_number_operator_tensor(δ)`).  The central block occupies original sites
+`first_op` through `last_op` inclusive, so
+`length(central_tensors) == last_op - first_op + 1`.
+
+Left projector spans sites 1 … first_op−1; right projector spans
+sites last_op+1 … N.  Each side must have at least 1 site, so
+`first_op ≥ 2` and `last_op ≤ N−1`.
+
+# Arguments
+- `sites`: optional pre-allocated `Vector{Index}` of length N.
+  When provided the returned MPO shares those indices, allowing two such
+  MPOs to be added with `add()`.  When `nothing`, fresh `siteinds("S=1/2", N)`
+  are created internally.
+"""
+function _projector_sandwich_mpo(N::Int, first_op::Int, last_op::Int,
+                                 central_tensors::Vector{Array{ComplexF64,4}};
+                                 sites=nothing)
+    @assert first_op >= 2 "first_op must be ≥ 2 (need ≥ 1 left-projector site). Got first_op=$first_op"
+    @assert last_op <= N-1 "last_op must be ≤ N-1 (need ≥ 1 right-projector site). Got last_op=$last_op, N=$N"
+    @assert length(central_tensors) == last_op - first_op + 1 "central_tensors length must equal last_op - first_op + 1"
+
+    d = 2  # spin-1/2
+
+    if sites === nothing
+        sites = siteinds("S=1/2", N)
+    end
+    M = MPO(sites)
+
+    # --- Bond-dimension profile ---
+    # Left projector: sites 1 … first_op-1
+    #   1 site  → χ=1 (identity, no internal bond)
+    #   ≥2 sites → χ=2 internally (L-M-…-M-R)
+    # Central: sites first_op … last_op → χ=1
+    # Right projector: sites last_op+1 … N
+    #   1 site  → χ=1
+    #   ≥2 sites → χ=2 internally
+    left_P_sites  = first_op - 1          # number of left-projector sites
+    right_P_sites = N - last_op           # number of right-projector sites
+
+    χ = Vector{Int}(undef, N-1)
+    for i in 1:(N-1)
+        if i <= first_op - 2
+            # inside left projector (only exists when left_P_sites ≥ 2)
+            χ[i] = 2
+        elseif i >= first_op - 1 && i <= last_op
+            # transition left-P → central, within central, central → right-P
+            χ[i] = 1
+        else
+            # inside right projector
+            χ[i] = 2
+        end
+    end
+
+    links = [Index(χ[i], "Link,l=$i") for i in 1:(N-1)]
+
+    for i in 1:N
+        s = sites[i]
+
+        # ============================================================
+        # Left projector region (sites 1 … first_op-1)
+        # ============================================================
+        if i <= first_op - 1
+            if left_P_sites == 1
+                # Single site: identity (χ=1 output)
+                W = _identity_tensor()
+                M[i] = ITensor(W[:,:,1,:], s', dag(s), links[i])
+
+            elseif i == 1
+                # L tensor (outputs χ=2)
+                W = _projector_tensor_left()
+                M[i] = ITensor(W, s', dag(s), links[i])
+
+            elseif i < first_op - 1
+                # M tensor (χ=2 both sides)
+                W = _projector_tensor_bulk()
+                M[i] = ITensor(W, s', dag(s), dag(links[i-1]), links[i])
+
+            else  # i == first_op - 1
+                # R tensor, reshaped to (d, d, 2, 1) for χ=1 right bond
+                W = _projector_tensor_right()
+                W_reshaped = reshape(W, (d, d, 2, 1))
+                M[i] = ITensor(W_reshaped, s', dag(s), dag(links[i-1]), links[i])
+            end
+
+        # ============================================================
+        # Central operator block (sites first_op … last_op)
+        # ============================================================
+        elseif i >= first_op && i <= last_op
+            W = central_tensors[i - first_op + 1]   # (2,2,1,1)
+            if i == 1  # can't happen given first_op≥2, but safe
+                M[i] = ITensor(W[:,:,1,:], s', dag(s), links[i])
+            elseif i == N  # can't happen given last_op≤N-1
+                M[i] = ITensor(W[:,:,:,1], s', dag(s), dag(links[i-1]))
+            else
+                M[i] = ITensor(W, s', dag(s), dag(links[i-1]), links[i])
+            end
+
+        # ============================================================
+        # Right projector region (sites last_op+1 … N)
+        # ============================================================
+        else
+            if right_P_sites == 1
+                # Single site: identity (χ=1 input)
+                W = _identity_tensor()
+                M[i] = ITensor(W[:,:,:,1], s', dag(s), dag(links[i-1]))
+
+            elseif i == last_op + 1
+                # L tensor, reshaped to (d, d, 1, 2) for χ=1 left bond
+                W = _projector_tensor_left()
+                W_reshaped = reshape(W, (d, d, 1, 2))
+                M[i] = ITensor(W_reshaped, s', dag(s), dag(links[i-1]), links[i])
+
+            elseif i < N
+                # M tensor (χ=2 both sides)
+                W = _projector_tensor_bulk()
+                M[i] = ITensor(W, s', dag(s), dag(links[i-1]), links[i])
+
+            else  # i == N
+                # R tensor (χ=2 input, no right bond)
+                W = _projector_tensor_right()
+                M[i] = ITensor(W, s', dag(s), dag(links[i-1]))
+            end
+        end
+    end
+
+    return M
+end
+
 #==============================================================================#
 # Energy Density MPO Construction (Bulk Case)
 #==============================================================================#
@@ -716,6 +878,199 @@ function identity_mpo_merged(merged_sites::Vector{Index})
     end
 
     return M
+end
+
+#==============================================================================#
+# PNP Energy Density (original sites)
+#==============================================================================#
+
+"""
+    energy_density_pnp_original(N::Int, l::Int; Ω=1.0, δ=0.0) -> MPO
+
+Construct the PNP energy density at original site `l`:
+
+    h_l^{PNP} = Ω P_{l-1} σˣ_l P_{l+1}  +  δ n_l
+
+The first term is the usual PXP 3-site block (D·X·D sandwiched by projectors).
+The second term is the number operator δ |↑⟩⟨↑| at site `l`, also sandwiched
+by projectors (single-site central block).
+
+Both terms share the same site indices so they can be added directly.
+
+Requires `3 ≤ l ≤ N-2` (PXP block needs at least 1 projector site each side).
+"""
+function energy_density_pnp_original(N::Int, l::Int; Ω=1.0, δ=0.0)
+    @assert 3 <= l <= N-2 "PNP original-site energy density requires 3 ≤ l ≤ N-2. Got l=$l, N=$N"
+
+    # Shared site indices so the two MPOs can be added
+    sites = siteinds("S=1/2", N)
+
+    # Term 1: PXP  —  central block is D · X · D at sites l-1, l, l+1
+    term_pxp = _projector_sandwich_mpo(N, l-1, l+1,
+        [_down_projector_tensor(), _flip_operator_tensor(Ω), _down_projector_tensor()];
+        sites=sites)
+
+    # Term 2: number operator  —  central block is δ n at site l
+    term_n = _projector_sandwich_mpo(N, l, l,
+        [_number_operator_tensor(δ)];
+        sites=sites)
+
+    return add(term_pxp, term_n; alg="directsum")
+end
+
+#==============================================================================#
+# PNPNP Energy Density (original sites)
+#==============================================================================#
+
+"""
+    energy_density_pnpnp_original(N::Int, l::Int; Ω=1.0, ξ=0.0) -> MPO
+
+Construct the PNPNP energy density at original site `l`:
+
+    h_l^{PNPNP} = Ω P_{l-1} σˣ_l P_{l+1}
+                 + ξ P_{l-2} σˣ_{l-1} P_l σˣ_{l+1} P_{l+2}
+
+The first term is the PXP 3-site block (D·X·D).
+The second term is the 5-site PNPNP block (D·X·D·X·D) with the ξ coefficient
+placed on the first flip tensor.
+
+Both terms share the same site indices.
+
+Requires `4 ≤ l ≤ N-3` (5-site block needs `first_op = l-2 ≥ 2` and
+`last_op = l+2 ≤ N-1`).
+"""
+function energy_density_pnpnp_original(N::Int, l::Int; Ω=1.0, ξ=0.0)
+    @assert 4 <= l <= N-3 "PNPNP original-site energy density requires 4 ≤ l ≤ N-3. Got l=$l, N=$N"
+
+    sites = siteinds("S=1/2", N)
+
+    # Term 1: PXP  —  D · X(Ω) · D  at sites l-1, l, l+1
+    term_pxp = _projector_sandwich_mpo(N, l-1, l+1,
+        [_down_projector_tensor(), _flip_operator_tensor(Ω), _down_projector_tensor()];
+        sites=sites)
+
+    # Term 2: 5-site PNPNP  —  D · X(ξ) · D · X(1) · D  at sites l-2 … l+2
+    # The ξ coefficient is carried by the first flip tensor (site l-1).
+    term_5site = _projector_sandwich_mpo(N, l-2, l+2,
+        [_down_projector_tensor(),
+         _flip_operator_tensor(ξ),
+         _down_projector_tensor(),
+         _flip_operator_tensor(1.0),
+         _down_projector_tensor()];
+        sites=sites)
+
+    return add(term_pxp, term_5site; alg="directsum")
+end
+
+#==============================================================================#
+# PNP / PNPNP Energy Density on Merged Sites
+#==============================================================================#
+
+"""
+    energy_density_pnp_merged(merged_sites::Vector{Index}, l_merged::Int;
+                              Ω=1.0, δ=0.0) -> MPO
+
+Construct the PNP energy density on merged sites at merged site `l_merged`.
+
+Merged site `l_merged` contains original sites `(2l-1, 2l)`.  The energy
+density sums all PNP terms whose "center" falls on either original site:
+
+- PXP at `2l-1` and PXP at `2l`
+- number at `2l-1` and number at `2l`
+
+Each is built on original sites via `energy_density_pnp_original`, merged with
+`merge_mpo_pairs`, then all four merged MPOs are summed.
+
+Requires `2 ≤ l_merged ≤ N_merged-1` (both original sites must satisfy
+`3 ≤ l_orig ≤ N_orig-2`).
+"""
+function energy_density_pnp_merged(merged_sites::Vector{Index}, l_merged::Int;
+                                   Ω=1.0, δ=0.0)
+    N_merged   = length(merged_sites)
+    N_original = 2 * N_merged
+
+    l_left  = 2 * l_merged - 1   # left original site
+    l_right = 2 * l_merged       # right original site
+
+    @assert 3 <= l_left  <= N_original-2 "Left original site $l_left out of bulk"
+    @assert 3 <= l_right <= N_original-2 "Right original site $l_right out of bulk"
+
+    # Build four original-site MPOs and merge each
+    h_pnp_left  = energy_density_pnp_original(N_original, l_left;  Ω=Ω, δ=δ)
+    h_pnp_right = energy_density_pnp_original(N_original, l_right; Ω=Ω, δ=δ)
+
+    h_left_merged  = merge_mpo_pairs(h_pnp_left,  merged_sites)
+    h_right_merged = merge_mpo_pairs(h_pnp_right, merged_sites)
+
+    return add(h_left_merged, h_right_merged; alg="directsum")
+end
+
+"""
+    energy_density_pnpnp_merged(merged_sites::Vector{Index}, l_merged::Int;
+                                Ω=1.0, ξ=0.0) -> MPO
+
+Construct the PNPNP energy density on merged sites at merged site `l_merged`.
+
+Merged site `l_merged` contains original sites `(2l-1, 2l)`.  The energy
+density sums:
+
+- PXP at `2l-1` and PXP at `2l`
+- 5-site PNPNP at `2l-1` and 5-site PNPNP at `2l`
+
+Each is built via `energy_density_pnpnp_original`, merged, then summed.
+
+Requires `3 ≤ l_merged ≤ N_merged-2` (5-site term at original site `2l-1`
+needs `2l-1 ≥ 4`, i.e. `l_merged ≥ 3`; at `2l` needs `2l ≤ N_orig-3`,
+i.e. `l_merged ≤ N_merged-2`).
+"""
+function energy_density_pnpnp_merged(merged_sites::Vector{Index}, l_merged::Int;
+                                     Ω=1.0, ξ=0.0)
+    N_merged   = length(merged_sites)
+    N_original = 2 * N_merged
+
+    l_left  = 2 * l_merged - 1
+    l_right = 2 * l_merged
+
+    @assert 4 <= l_left  <= N_original-3 "Left original site $l_left out of PNPNP bulk"
+    @assert 4 <= l_right <= N_original-3 "Right original site $l_right out of PNPNP bulk"
+
+    h_pnpnp_left  = energy_density_pnpnp_original(N_original, l_left;  Ω=Ω, ξ=ξ)
+    h_pnpnp_right = energy_density_pnpnp_original(N_original, l_right; Ω=Ω, ξ=ξ)
+
+    h_left_merged  = merge_mpo_pairs(h_pnpnp_left,  merged_sites)
+    h_right_merged = merge_mpo_pairs(h_pnpnp_right, merged_sites)
+
+    return add(h_left_merged, h_right_merged; alg="directsum")
+end
+
+#==============================================================================#
+# Center-site Convenience Functions
+#==============================================================================#
+
+"""
+    center_energy_density_pnp_merged(merged_sites::Vector{Index};
+                                     Ω=1.0, δ=0.0) -> MPO
+
+PNP energy density at the center merged site.
+"""
+function center_energy_density_pnp_merged(merged_sites::Vector{Index};
+                                          Ω=1.0, δ=0.0)
+    N = length(merged_sites)
+    l = div(N + 1, 2)
+    return energy_density_pnp_merged(merged_sites, l; Ω=Ω, δ=δ)
+end
+
+"""
+    center_energy_density_pnpnp_merged(merged_sites::Vector{Index};
+                                       Ω=1.0, ξ=0.0) -> MPO
+
+PNPNP energy density at the center merged site.
+"""
+function center_energy_density_pnpnp_merged(merged_sites::Vector{Index};
+                                            Ω=1.0, ξ=0.0)
+    N = length(merged_sites)
+    l = div(N + 1, 2)
+    return energy_density_pnpnp_merged(merged_sites, l; Ω=Ω, ξ=ξ)
 end
 
 #==============================================================================#
@@ -1220,5 +1575,9 @@ export energy_density_original, projector_mpo_original
 export merge_mpo_pairs
 export energy_density_merged, center_energy_density_merged
 export identity_mpo_merged, projector_mpo_merged
+# PNP / PNPNP energy densities
+export energy_density_pnp_original, energy_density_pnpnp_original
+export energy_density_pnp_merged, energy_density_pnpnp_merged
+export center_energy_density_pnp_merged, center_energy_density_pnpnp_merged
 
  
