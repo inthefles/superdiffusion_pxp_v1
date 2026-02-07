@@ -911,8 +911,8 @@ function energy_density_pnp_original(N::Int, l::Int; Ω=1.0, δ=0.0)
         sites=sites)
 
     # Term 2: number operator  —  central block is δ n at site l
-    term_n = _projector_sandwich_mpo(N, l, l,
-        [_number_operator_tensor(δ)];
+    term_n = _projector_sandwich_mpo(N, l-1, l+1,
+        [_down_projector_tensor(), _number_operator_tensor(δ), _down_projector_tensor()];
         sites=sites)
 
     return add(term_pxp, term_n; alg="directsum")
