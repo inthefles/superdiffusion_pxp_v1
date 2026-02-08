@@ -185,10 +185,11 @@ Paper Eq A2: L = (|↑⟩⟨↑| + |↓⟩⟨↓|, |↓⟩⟨↓|) = (I, |↓⟩
 function _projector_tensor_left()
     d, χ = 2, 2
     W = zeros(ComplexF64, d, d, χ)
-    # β=1: First site is ↓ (safe for next site)
+    # α=1: previous was ↓ (last site can be ↓ or ↑)
     W[SPIN_DOWN, SPIN_DOWN, 1] = 1.0
-    # β=2: First site is ↑ (danger for next site)
-    W[SPIN_UP, SPIN_UP, 2] = 1.0
+    W[SPIN_UP, SPIN_UP, 1] = 1.0
+    # α=2: previous was ↑ (last site must be ↓ to avoid ↑↑)
+    W[SPIN_DOWN, SPIN_DOWN, 2] = 1.0
     return W
 end
 
@@ -206,17 +207,9 @@ Output β: 1 if current=↓ (safe), 2 if current=↑ (danger for next site)
 function _projector_tensor_bulk()
     d, χ = 2, 2
     W = zeros(ComplexF64, d, d, χ, χ)
-    for α in 1:χ
-        for s in [SPIN_UP, SPIN_DOWN]
-            # If danger (α=2) and current=↑: forbidden (would be ↑↑)
-            if α == 2 && s == SPIN_UP
-                continue
-            end
-            # Output: safe (β=1) if ↓, danger (β=2) if ↑
-            β = (s == SPIN_UP) ? 2 : 1
-            W[s, s, α, β] = 1.0
-        end
-    end
+    W[SPIN_DOWN, SPIN_DOWN, 1, 1] = 1.0
+    W[SPIN_DOWN,SPIN_DOWN,1, 2] = 1.0
+    W[SPIN_UP, SPIN_UP, 2, 1] = 1.0
     return W
 end
 
@@ -231,11 +224,10 @@ Paper Eq A5: R[↓] = (1,0)ᵀ, R[↑] = (0,1)ᵀ
 function _projector_tensor_right()
     d, χ = 2, 2
     W = zeros(ComplexF64, d, d, χ)
-    # α=1: previous was ↓ (last site can be ↓ or ↑)
+    # β=1: First site is ↓ (safe for next site)
     W[SPIN_DOWN, SPIN_DOWN, 1] = 1.0
-    W[SPIN_UP, SPIN_UP, 1] = 1.0
-    # α=2: previous was ↑ (last site must be ↓ to avoid ↑↑)
-    W[SPIN_DOWN, SPIN_DOWN, 2] = 1.0
+    # β=2: First site is ↑ (danger for next site)
+    W[SPIN_UP, SPIN_UP, 2] = 1.0
     return W
 end
 
@@ -1002,7 +994,8 @@ function energy_density_pnp_merged(merged_sites::Vector{Index}, l_merged::Int;
     h_left_merged  = merge_mpo_pairs(h_pnp_left,  merged_sites)
     h_right_merged = merge_mpo_pairs(h_pnp_right, merged_sites)
 
-    return add(h_left_merged, h_right_merged; alg="directsum")
+    return h_right_merged
+    #add(h_left_merged, h_right_merged; alg="directsum")
 end
 
 """
@@ -1040,7 +1033,8 @@ function energy_density_pnpnp_merged(merged_sites::Vector{Index}, l_merged::Int;
     h_left_merged  = merge_mpo_pairs(h_pnpnp_left,  merged_sites)
     h_right_merged = merge_mpo_pairs(h_pnpnp_right, merged_sites)
 
-    return add(h_left_merged, h_right_merged; alg="directsum")
+    return h_right_merged
+    #add(h_left_merged, h_right_merged; alg="directsum")
 end
 
 #==============================================================================#
