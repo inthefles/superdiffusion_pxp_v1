@@ -155,8 +155,8 @@ end
 
 """
 State encoding for original spin-1/2 sites:
-|↓⟩ → 1
-|↑⟩ → 2
+|↑⟩ → 1  (conventional physics notation, matches ITensor "Up")
+|↓⟩ → 2  (conventional physics notation, matches ITensor "Dn")
 
 Virtual bond encoding for projector (χ=2):
 1 = safe (previous site was ↓)
@@ -164,8 +164,8 @@ Virtual bond encoding for projector (χ=2):
 
 Down projector 𝒟 and flip operator 𝒳 are χ=1 (local operators).
 """
-const SPIN_DOWN = 1
-const SPIN_UP = 2
+const SPIN_UP = 1
+const SPIN_DOWN = 2
 
 #------------------------------------------------------------------------------
 # Projector Tensors (χ=2)
@@ -207,7 +207,7 @@ function _projector_tensor_bulk()
     d, χ = 2, 2
     W = zeros(ComplexF64, d, d, χ, χ)
     for α in 1:χ
-        for s in [SPIN_DOWN, SPIN_UP]
+        for s in [SPIN_UP, SPIN_DOWN]
             # If danger (α=2) and current=↑: forbidden (would be ↑↑)
             if α == 2 && s == SPIN_UP
                 continue
