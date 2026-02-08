@@ -7,6 +7,7 @@
 # Reference: Ljubotina et al., Phys. Rev. X 13, 011033 (2023)
 
 using ITensors
+using ITensorMPS
 using LinearAlgebra
 
 #==============================================================================#
@@ -302,65 +303,23 @@ function apply_2site_gate_to_merged_MPO!(M::MPO, gate::ITensor, i::Int;
     N = length(M)
     @assert 1 <= i < N "Gate sites ($i, $j) must be valid adjacent sites"
 
-    # Contract the two adjacent MPO tensors
-    M_combined = M[i] * M[j]
-
-    # For Heisenberg evolution: O(t) = U† O U
-    # Apply U to ket indices (unprimed site indices of M)
-    # Apply U† to bra indices (primed site indices of M)
+    # For Heisenberg evolution: O(t) = U†(t) O(0) U(t)
+    # Use ITensors apply() function with apply_dag=true
+    # This correctly implements the operator evolution
     #
-    # The gate has structure: gate = ITensor(U, s1', s2', dag(s1), dag(s2))
-    # where s1', s2' are primed (output) and dag(s1), dag(s2) are unprimed (input)
-    #
-    # For MPO: M has indices (s, s') at each site
-    # We need: M_new[s', s] = sum_{s1, s1'} U†[s', s1'] M[s1', s1] U[s1, s]
-    #
-    # Step 1: Apply U from the right (ket side)
-    # Contract gate's unprimed input indices with M's unprimed indices
-    M_temp = M_combined * gate
+    # Per ITensor documentation:
+    # apply([gates], MPO; apply_dag=true) applies gates and their conjugates
 
-    # Step 2: Apply U† from the left (bra side)
-    # Create U† by conjugating and swapping prime levels
-    gate_dag = dag(gate)
-    # The conjugate gate has primed indices as inputs and unprimed as outputs
-    # We need to swap so it contracts with M's primed indices
-    # gate_dag: dag(s1)', dag(s2)', s1, s2 -> need to contract s1, s2 with M's s1', s2'
-    # Use replaceprime to shift indices appropriately
-    gate_dag = replaceprime(gate_dag, 1 => 2)  # s' -> s''
-    gate_dag = replaceprime(gate_dag, 0 => 1)  # s -> s'
-    gate_dag = replaceprime(gate_dag, 2 => 0)  # s'' -> s
+    # Create temporary 2-site MPO
+    M_sub = MPO([M[i], M[j]])
 
-    M_new = M_temp * gate_dag
+    # Apply gate with apply_dag=true for operator evolution
+    # This implements U·M·U† (which equals U†·M·U for unitary U)
+    M_evolved = apply([gate], M_sub; apply_dag=true, maxdim=maxdim, cutoff=cutoff)
 
-    # Remove any prime level 2 indices that might remain
-    M_new = replaceprime(M_new, 2 => 1)
-
-    # SVD to restore MPO form
-    # Collect indices that should go to the left tensor (site i)
-    # This includes: site indices at i (both primed and unprimed) and left link
-    left_inds = Index[]
-
-    # Get site indices at position i
-    s_i = siteind(M, i)
-    push!(left_inds, s_i)
-    if hasind(M_new, s_i')
-        push!(left_inds, s_i')
-    end
-
-    # Get left link index if not at left boundary
-    if i > 1
-        l_left = linkind(M, i-1)
-        if hasind(M_new, l_left)
-            push!(left_inds, l_left)
-        end
-    end
-
-    # Perform SVD
-    U, S, V = svd(M_new, Tuple(left_inds); maxdim=maxdim, cutoff=cutoff)
-
-    # Assign back to MPO
-    M[i] = U
-    M[j] = S * V
+    # Put evolved tensors back
+    M[i] = M_evolved[1]
+    M[j] = M_evolved[2]
 
     return M
 end

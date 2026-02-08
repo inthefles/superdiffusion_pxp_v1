@@ -96,12 +96,13 @@ function run_pxp_simulation(; N=64, maxdim=128, tmax=20.0, dt=0.05,
     @info "Starting PXP transport simulation"
     @info "  N = $N, χ = $maxdim, t_max = $tmax"
 
-    # Create site indices
-    sites = PXPSites(N)
+    # Create merged site representation
+    info = create_merged_sites(N)
+    @info "  Created $(info.N_merged) merged sites from $N original sites"
 
-    # Construct energy density at center
-    h0 = center_energy_density(sites; Ω=Ω)
-    @info "  Created energy density operator at site $(div(N+1, 2))"
+    # Construct energy density at center using merged site representation
+    h0 = center_energy_density_merged(info.merged_sites; Ω=Ω)
+    @info "  Created energy density operator at merged site $(div(info.N_merged+1, 2))"
 
     # TEBD parameters
     params = TEBDParams(dt=dt, maxdim=maxdim, cutoff=cutoff, order=order,
@@ -112,12 +113,12 @@ function run_pxp_simulation(; N=64, maxdim=128, tmax=20.0, dt=0.05,
     nsteps = round(Int, tmax / dt)
     save_times = collect(range(0, tmax, length=min(nsteps+1, 401)))
 
-    times, mpos = run_tebd_evolution(sites, h0, tmax, params; save_times=save_times)
+    times, mpos = run_tebd_evolution(info, h0, tmax, params; save_times=save_times)
     @info "  Evolution complete, $(length(times)) time points saved"
 
     # Compute correlation function
     @info "  Computing correlation function..."
-    C = compute_correlation_function(sites, h0, times, mpos)
+    C = compute_correlation_function(info.merged_sites, h0, times, mpos)
 
     # Extract exponents
     t_mid, z_inv = instantaneous_exponent(times, C)

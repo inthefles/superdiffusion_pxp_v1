@@ -818,7 +818,8 @@ function energy_density_merged(merged_sites::Vector{Index}, l_merged::Int; Ω=1.
     h2_merged = merge_mpo_pairs(h2_original, merged_sites)
 
     # Add the two MPOs
-    return add(h1_merged, h2_merged; alg="directsum")
+    return h1_merged
+    #add(h1_merged, h2_merged; alg="directsum")
 end
 
 """

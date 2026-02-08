@@ -16,52 +16,16 @@ s_i = s_i' for all sites.
 """
 function trace_mpo(M::MPO)
     N = length(M)
-
-    # Contract the first tensor with trace over physical index
-    sites = siteinds(M)
-    result = M[1] * delta(sites[1]...) # Assumes siteinds returns pairs (s, s')
-
-    # Actually, siteinds for MPO returns the site indices
-    # We need to trace: contract s with s' at each site
-
-    # Alternative: use inner product trick
-    # Tr[M] = inner(I, M) where I is identity MPS-like object
-
-    # Simpler approach: direct contraction
     result = ITensor(1.0)
+
     for i in 1:N
         # Get physical indices at site i
-        s = siteind(M, i)  # Gets one of the site indices
+        s = siteind(M, i)
         sp = s'  # The primed version
 
         # Contract: Σ_s M[i]_{s,s} (trace over physical index)
-        # This requires delta(s, s') contraction
         δ = delta(s, sp)
         result = result * M[i] * δ
-    end
-
-    return scalar(result)
-end
-
-"""
-    inner_mpo(A::MPO, B::MPO) -> ComplexF64
-
-Compute the Hilbert-Schmidt inner product: Tr[A† B]
-"""
-function inner_mpo(A::MPO, B::MPO)
-    @assert length(A) == length(B)
-    N = length(A)
-
-    # Tr[A† B] can be computed by contracting A and B
-    # with their physical indices contracted
-
-    result = ITensor(1.0)
-    for i in 1:N
-        # Contract A†[i] with B[i] over physical indices
-        # A†[i] = conj(A[i]) with primes swapped
-
-        A_dag_i = dag(swapprime(A[i], 0, 1))
-        result = result * A_dag_i * B[i]
     end
 
     return scalar(result)
@@ -71,108 +35,56 @@ end
     mpo_norm(M::MPO) -> Float64
 
 Compute the Frobenius norm of an MPO: ||M||_F = √Tr[M†M]
+
+Uses ITensors' built-in inner() function.
 """
 function mpo_norm(M::MPO)
-    return sqrt(abs(inner_mpo(M, M)))
+    return sqrt(abs(inner(M, M)))
 end
 
 """
-    autocorrelation(h0::MPO, ht::MPO; use_projector=false, P::Union{MPO,Nothing}=nothing) -> Float64
+    autocorrelation(h0::MPO, ht::MPO) -> Float64
 
-Compute the infinite-temperature autocorrelation function:
-    C(t) = Tr[h(0) h(t)] / Tr[I] - (Tr[h(0)] / Tr[I])²
+Compute the energy-energy autocorrelation function:
+    C(t) = ⟨h₀(0) h₀(t)⟩ - ⟨h₀⟩²
 
-For the PXP model at infinite temperature, we use:
-    ⟨h(0) h(t)⟩ = Tr[h₀ hₜ] / D
+where:
+    h₀(0) = h₀  (initial energy density operator)
+    h₀(t) = U†(t) h₀ U(t) = hₜ  (time-evolved operator in Heisenberg picture)
 
-where D is the Hilbert space dimension.
+For the PXP model:
+    ⟨...⟩ = Tr[...]  (infinite temperature, with projector already built into h₀)
 
-If use_projector=true, restricts to the constrained subspace:
-    C(t) = Tr[𝒫 h₀ hₜ] / Tr[𝒫] - (Tr[𝒫 h₀] / Tr[𝒫])²
+Since the energy density operator h₀ = Ω P_{l-1} σˣ_l P_{l+1} already contains
+the projectors P, and for unitary evolution Tr[hₜ] = Tr[h₀], we have:
+    C(t) = Tr[h₀ hₜ] - (Tr[h₀])²
+
+Note: We don't normalize by Hilbert space dimension D since the projectors
+already restrict to the physical subspace.
 """
-function autocorrelation(h0::MPO, ht::MPO;
-                         use_projector=false, P::Union{MPO,Nothing}=nothing)
-    N = length(h0)
+function autocorrelation(h0::MPO, ht::MPO)
+    # Compute two-point function: Tr[h₀ hₜ]
+    # Use ITensors' built-in inner() which computes Tr[A† B]
+    # Since h₀, hₜ are Hermitian, Tr[h₀ hₜ] = Tr[h₀† hₜ] = inner(h₀, hₜ)
+    two_point = real(inner(h0, ht))
 
-    if use_projector && !isnothing(P)
-        # Restricted trace using projector
-        # Tr[𝒫 h₀ hₜ] requires computing 𝒫 * h₀ * hₜ as an MPO product
-        # This is expensive; for now we use unrestricted trace
+    # Compute one-point function: Tr[h₀]
+    tr_h0 = real(trace_mpo(h0))
 
-        # Approximate: Tr[h₀ hₜ] ≈ D * C(t) where D = 2^N
-        # The projector should give similar dynamics for local observables
-        error("Projector-restricted trace not yet implemented")
-    end
-
-    # Compute Tr[h₀ hₜ]
-    # This is the Hilbert-Schmidt inner product (up to normalization)
-
-    # For MPOs, Tr[A B] = Tr[A†† B] = inner_mpo(A†, B) with proper normalization
-    # But h₀, hₜ are Hermitian, so we can use a simpler approach
-
-    # Contract h0 and ht with all physical indices traced
-    tr_h0_ht = _trace_mpo_product(h0, ht)
-
-    # Normalization: Tr[I] = 2^N for unconstrained space
-    D = 2.0^N
-    C_t = real(tr_h0_ht) / D
-
-    # Subtract disconnected part (usually zero for traceless operators)
-    tr_h0 = trace_mpo(h0)
-    mean_h = real(tr_h0) / D
-    C_t -= mean_h^2
+    # Connected correlation function
+    C_t = two_point - tr_h0^2
 
     return C_t
 end
 
 """
-    _trace_mpo_product(A::MPO, B::MPO) -> ComplexF64
-
-Compute Tr[A B] for two MPOs.
-This contracts A and B vertically and traces over physical indices.
-"""
-function _trace_mpo_product(A::MPO, B::MPO)
-    @assert length(A) == length(B)
-    N = length(A)
-
-    # Build a "double MPO" and trace
-    # Tr[A B] = Σ_{s₁...sₙ} ⟨s|A|s'⟩⟨s'|B|s⟩
-
-    result = ITensor(1.0)
-
-    for i in 1:N
-        # A has indices: (link_left, s, s', link_right)
-        # B has indices: (link_left', s', s'', link_right')
-
-        # For trace: s = s'' (outer indices equal)
-        # and s' (middle index) is summed
-
-        # Contract A[i] * B[i] with appropriate index matching
-        # Need to be careful about which indices to contract
-
-        # Get site indices
-        s_A = siteind(A, i)
-        s_B = siteind(B, i)
-
-        # For the product Tr[AB]:
-        # (A*B)_{s,s''} = Σ_{s'} A_{s,s'} B_{s',s''}
-        # Then trace: Σ_s (A*B)_{s,s}
-
-        # Contract A[i] and B[i]
-        AB_i = A[i] * B[i]
-        result = result * AB_i
-    end
-
-    # The result should have paired site indices; trace over them
-    # If indices don't match exactly, may need delta tensors
-
-    return scalar(result)
-end
-
-"""
     compute_correlation_function(sites, h0::MPO, times::Vector{Float64}, mpos::Vector{MPO}) -> Vector{Float64}
 
-Compute the autocorrelation function C(t) = ⟨h(0)h(t)⟩ - ⟨h⟩² for all saved times.
+Compute the energy-energy autocorrelation function for all saved times:
+    C(t) = ⟨h₀(0) h₀(t)⟩ - ⟨h₀(0)⟩⟨h₀(t)⟩
+
+where h₀(0) = h0 and h₀(t) = mpos[i] are the energy density operators
+at time t=0 and t=times[i] in the Heisenberg picture.
 """
 function compute_correlation_function(sites, h0::MPO, times::Vector{Float64},
                                        mpos::Vector{MPO})
@@ -288,13 +200,101 @@ end
 Check that ||h(t)||_F ≈ ||h(0)||_F for all times (unitarity check).
 
 Returns the ratio ||h(t)||/||h(0)|| which should be close to 1.
+Uses ITensors' built-in norm() function.
 """
 function check_unitarity(mpos::Vector{MPO}, h0::MPO)
-    norm_h0 = mpo_norm(h0)
-    return [mpo_norm(ht) / norm_h0 for ht in mpos]
+    norm_h0 = sqrt(abs(inner(h0, h0)))
+    return [sqrt(abs(inner(ht, ht))) / norm_h0 for ht in mpos]
 end
 
-export trace_mpo, inner_mpo, mpo_norm
+"""
+    expectation_with_projector(O::MPO, P::MPO) -> Float64
+
+Compute expectation value using the projector onto the constrained subspace:
+    ⟨O⟩ = Tr[P O] / Tr[P]
+
+where P is the global constraint projector for the Rydberg blockade.
+
+This is the proper definition for operators that don't already include
+the projector constraints.
+"""
+function expectation_with_projector(O::MPO, P::MPO)
+    # Tr[P O] using ITensors' inner function
+    # Note: inner(A, B) computes Tr[A† B]
+    # For MPO product, we need to contract them first
+
+    # Since P is Hermitian projector, Tr[P O] = Tr[P† O] = inner(P, O)
+    tr_PO = real(inner(P, O))
+
+    # Tr[P]
+    tr_P = real(trace_mpo(P))
+
+    return tr_PO / tr_P
+end
+
+"""
+    autocorrelation_with_projector(h0::MPO, ht::MPO, P::MPO) -> Float64
+
+Compute the energy-energy autocorrelation function with explicit projector:
+    C(t) = ⟨h₀(0) h₀(t)⟩ - ⟨h₀(0)⟩⟨h₀(t)⟩
+
+where ⟨...⟩ = Tr[P ...] / Tr[P]
+
+This uses the projector P explicitly to restrict to the constrained subspace,
+rather than relying on the operator already containing projectors.
+"""
+function autocorrelation_with_projector(h0::MPO, ht::MPO, P::MPO)
+    # Compute Tr[P]
+    tr_P = real(trace_mpo(P))
+
+    # Compute ⟨h₀(0) h₀(t)⟩ = Tr[P h₀ hₜ] / Tr[P]
+    # Need to contract P * h₀ * hₜ
+    # For MPOs: (P*h₀*hₜ) means contracting the physical indices
+
+    # Method: Tr[P h₀ hₜ] = Tr[(P h₀) hₜ]
+    # First compute Ph0 = P * h0
+    Ph0 = apply(P, h0; cutoff=1e-14)
+
+    # Then compute Tr[(P h₀) hₜ] = inner(Ph0, ht)
+    tr_Ph0ht = real(inner(Ph0, ht))
+    two_point = tr_Ph0ht / tr_P
+
+    # Compute ⟨h₀(0)⟩ = Tr[P h₀] / Tr[P]
+    tr_Ph0 = real(inner(P, h0))
+    mean_h0 = tr_Ph0 / tr_P
+
+    # Compute ⟨h₀(t)⟩ = Tr[P hₜ] / Tr[P]
+    tr_Pht = real(inner(P, ht))
+    mean_ht = tr_Pht / tr_P
+
+    # Connected correlation
+    C_t = two_point - mean_h0 * mean_ht
+
+    return C_t
+end
+
+"""
+    compute_correlation_with_projector(sites, h0::MPO, times::Vector{Float64},
+                                       mpos::Vector{MPO}, P::MPO) -> Vector{Float64}
+
+Compute correlation function using explicit projector for all time points.
+"""
+function compute_correlation_with_projector(sites, h0::MPO, times::Vector{Float64},
+                                           mpos::Vector{MPO}, P::MPO)
+    @assert length(times) == length(mpos)
+
+    C = Float64[]
+    for (t, ht) in zip(times, mpos)
+        C_t = autocorrelation_with_projector(h0, ht, P)
+        push!(C, C_t)
+    end
+
+    return C
+end
+
+export trace_mpo, mpo_norm
 export autocorrelation, compute_correlation_function
 export instantaneous_exponent, fit_exponent
 export spatial_correlation, check_unitarity
+export expectation_with_projector, autocorrelation_with_projector
+export compute_correlation_with_projector

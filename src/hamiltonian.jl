@@ -8,6 +8,7 @@
 # where P_i = (1 - σ^z_i)/2 = |↓⟩⟨↓| is the projector onto the ground state.
 
 using ITensors
+using ITensorMPS
 using LinearAlgebra
 
 """
