@@ -185,12 +185,10 @@ Paper Eq A2: L = (|↑⟩⟨↑| + |↓⟩⟨↓|, |↓⟩⟨↓|) = (I, |↓⟩
 function _projector_tensor_left()
     d, χ = 2, 2
     W = zeros(ComplexF64, d, d, χ)
-    # β=1: Identity
+    # β=1: First site is ↓ (safe for next site)
     W[SPIN_DOWN, SPIN_DOWN, 1] = 1.0
-    W[SPIN_UP, SPIN_UP, 1] = 1.0
-    # β=2: |↓⟩⟨↓|
-    W[SPIN_DOWN, SPIN_DOWN, 2] = 1.0
-    # W[SPIN_UP, SPIN_UP, 2] = 0.0 (already zero)
+    # β=2: First site is ↑ (danger for next site)
+    W[SPIN_UP, SPIN_UP, 2] = 1.0
     return W
 end
 
@@ -233,10 +231,11 @@ Paper Eq A5: R[↓] = (1,0)ᵀ, R[↑] = (0,1)ᵀ
 function _projector_tensor_right()
     d, χ = 2, 2
     W = zeros(ComplexF64, d, d, χ)
-    # ↓ accepts α=1
+    # α=1: previous was ↓ (last site can be ↓ or ↑)
     W[SPIN_DOWN, SPIN_DOWN, 1] = 1.0
-    # ↑ accepts only α=2 (safe)
-    W[SPIN_UP, SPIN_UP, 2] = 1.0
+    W[SPIN_UP, SPIN_UP, 1] = 1.0
+    # α=2: previous was ↑ (last site must be ↓ to avoid ↑↑)
+    W[SPIN_DOWN, SPIN_DOWN, 2] = 1.0
     return W
 end
 
